@@ -23,6 +23,8 @@ export type DiffEngine={
   sample?:{a:string;b:string}; // what Sample loads, if not the default text
   compare:(a:string,b:string)=>Result|Promise<Result>; // may be asynchronous, e.g. a language-model engine
   counts:(r:Result)=>Count[]; // the numbers in the results header, with their unit
+  runsOnCompareOnly?:boolean; // run only when Compare is pressed (e.g. a paid engine), never on typing, switching or loading a file
+  sendsTextToProvider?:string; // the service the two texts are sent to; the footer names it
 };
 const unitCounts=(one:string,many:string)=>(r:Result):Count[]=>{const u=(n:number)=>n===1?one:many;return [{text:`+${r.added} ${u(r.added)}`,tone:'green'},{text:`−${r.removed} ${u(r.removed)}`,tone:'red'},{text:`${r.unchanged} ${u(r.unchanged)} matched`}]};
 const jsonCounts=(r:Result):Count[]=>[{text:`+${r.added} added`,tone:'green'},{text:`−${r.removed} removed`,tone:'red'},{text:`~${r.changed??0} changed`,tone:'amber'},{text:`${r.unchanged} unchanged`}];
