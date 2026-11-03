@@ -1,7 +1,7 @@
 import {diffLines,diffWordsWithSpace,diffChars, type Change} from 'diff';
 export type Segment = {text:string;kind:'same'|'added'|'removed'};
 export type Finding = {topic:string;type:'agreement'|'conflict'|'unique'|'uncertain';a:string;b:string;explanation:string};
-export type Result = {segments:Segment[];findings:Finding[];summary:string;added:number;removed:number;unchanged:number;changed?:number;error?:string;invalid?:('A'|'B')[]};
+export type Result = {segments:Segment[];findings:Finding[];summary:string;added:number;removed:number;unchanged:number;changed?:number;error?:string;invalid?:('A'|'B')[];usage?:{inputTokens:number;outputTokens:number}};
 const kind=(x:Change):Segment['kind']=>x.added?'added':x.removed?'removed':'same';
 const measure={line:(t:string)=>t?(t.match(/\n/g)?.length??0)+(t.endsWith('\n')?0:1):0,word:(t:string)=>t.match(/\S+/g)?.length??0,character:(t:string)=>t.length};
 function fromChanges(changes:Change[],unit:string,size:(t:string)=>number):Result {const segments=changes.map(x=>({text:x.value,kind:kind(x)}));const count=(k:Segment['kind'])=>segments.filter(x=>x.kind===k).reduce((n,x)=>n+size(x.text),0);return {segments,findings:[],summary:`${unit} comparison · changes highlighted below`,added:count('added'),removed:count('removed'),unchanged:count('same')}}
@@ -25,10 +25,22 @@ export type DiffEngine={
   counts:(r:Result)=>Count[]; // the numbers in the results header, with their unit
   runsOnCompareOnly?:boolean; // run only when Compare is pressed (e.g. a paid engine), never on typing, switching or loading a file
   sendsTextToProvider?:string; // the service the two texts are sent to; the footer names it
+  price?:{inputPerMTok:number;outputPerMTok:number}; // US dollars per million tokens, for the estimated cost under the header
 };
 const unitCounts=(one:string,many:string)=>(r:Result):Count[]=>{const u=(n:number)=>n===1?one:many;return [{text:`+${r.added} ${u(r.added)}`,tone:'green'},{text:`−${r.removed} ${u(r.removed)}`,tone:'red'},{text:`${r.unchanged} ${u(r.unchanged)} matched`}]};
 const jsonCounts=(r:Result):Count[]=>[{text:`+${r.added} added`,tone:'green'},{text:`−${r.removed} removed`,tone:'red'},{text:`~${r.changed??0} changed`,tone:'amber'},{text:`${r.unchanged} unchanged`}];
 const jsonSample={a:'{"model":"gpt-4.1","stream":false,"retry":1,"config":{"timeout":30}}',b:'{"model":"gpt-6","stream":true,"retry":3,"config":{"timeout":30}}'};
+// The Meaning engine asks Claude, through this app's own server route, for the differences in meaning.
+const meaningCounts=(r:Result):Count[]=>[{text:`${r.removed} conflicting`,tone:'red'},{text:`${r.added} only in one`,tone:'green'},{text:`~${r.changed??0} uncertain`,tone:'amber'},{text:`${r.unchanged} agreeing`}];
+async function compareMeaning(a:string,b:string):Promise<Result>{
+  let response:Response;
+  try{response=await fetch('/api/compare-meaning',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({a,b})})}
+  catch{return failed(new Error('Could not reach the diff lab\'s own server'))}
+  const data=await response.json().catch(()=>null) as {findings?:Finding[];usage?:Result['usage'];error?:string;inputs?:('A'|'B')[]}|null;
+  if(!response.ok||!data?.findings){const r=failed(new Error(data?.error||`The comparison failed (HTTP ${response.status})`));return data?.inputs?.length?{...r,invalid:data.inputs}:r}
+  const findings=data.findings,n=(t:Finding['type'])=>findings.filter(f=>f.type===t).length;
+  return {segments:[],findings,summary:'Meaning comparison by Claude Opus 5.5 · a model\'s reading, check what matters',added:n('unique'),removed:n('conflict'),changed:n('uncertain'),unchanged:n('agreement'),usage:data.usage};
+}
 // The registry: the first entry is selected at start. A new engine needs only a new entry here.
 export const engines:DiffEngine[]=[
   {id:'word',label:'Word diff',views:['inline','side'],separateReplacements:true,compare:(a,b)=>fromChanges(diffWordsWithSpace(a,b),'Word',measure.word),counts:unitCounts('word','words')},
@@ -36,6 +48,7 @@ export const engines:DiffEngine[]=[
   {id:'character',label:'Character diff',views:['inline','side'],compare:(a,b)=>fromChanges(diffChars(a,b),'Character',measure.character),counts:unitCounts('character','characters')},
   {id:'json',label:'JSON structural diff',views:['findings'],sample:jsonSample,compare:jsonDiff,counts:jsonCounts},
   {id:'semantic',label:'Semantic (heuristic)',views:['findings'],compare:semantic,counts:unitCounts('statement','statements')},
+  {id:'meaning',label:'Meaning (Claude Opus 5.5)',views:['findings'],runsOnCompareOnly:true,sendsTextToProvider:'Anthropic',price:{inputPerMTok:4,outputPerMTok:20},compare:compareMeaning,counts:meaningCounts},
 ];
 export const findEngine=(id:string)=>engines.find(e=>e.id===id)??engines[0];
 export const failed=(e:unknown):Result=>({segments:[],findings:[],summary:'Comparison failed',added:0,removed:0,unchanged:0,error:e instanceof Error?e.message:String(e)});
